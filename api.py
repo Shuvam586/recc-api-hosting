@@ -1,22 +1,41 @@
 from flask import Flask, request, jsonify
-import json
+import pandas as pd
 import random
-import difflib
-from flask_cors import CORS
+from difflib import SequenceMatcher
+import os
+import glob
+import json
+from helper import genreGetter
 
 app = Flask(__name__)
-CORS(app)
 
-# Load JSON data from a file
-with open('movies.json') as f:
-    movies_data = json.load(f)['movies']
+# Load genre to sub-chunk mapping from JSON file
+with open('genre_to_subchunk.json') as f:
+    genre_to_subchunk = json.load(f)
+
+# Load IMDb to chunk mapping from JSON file
+with open('imdb_to_chunk.json') as f:
+    imdb_to_chunk = json.load(f)
 
 # Helper function to get a movie by ID
-def get_movie_by_id(movie_id):
-    return next((movie for movie in movies_data if movie['id'] == movie_id), None)
+def get_movie_by_id(movie_id, chunk_folder):
+    # chunk_folder = imdb_to_chunk.get(str(movie_id))
+    if chunk_folder:
+        subchunk_files = [file for file in glob.glob(os.path.join(chunk_folder, 'subchunk_*.csv'))]
+        for file in subchunk_files:
+            df = pd.read_csv(file)
+            if movie_id in df['id'].values:
+                return df.loc[df['id'] == movie_id].to_dict('records')[0]
+    return None
 
-def get_genre(movie_id):
-    return next((movie['genre'] for movie in movies_data if movie['id'] == movie_id), None)
+
+# Helper function to get movies by genre
+def get_movies_by_genre(genre, chunk_folder):
+    subchunk_file = os.path.join(chunk_folder, f'subchunk_{genre.replace(" ", "_")}.csv')
+    if os.path.exists(subchunk_file):
+        df = pd.read_csv(subchunk_file)
+        return df.to_dict('records')
+    return []
 
 # /reccwatched - Fetches recommendations based on movies already watched and similar plots
 @app.route('/reccwatched', methods=['GET'])
@@ -25,52 +44,95 @@ def recc_watched():
     if not param:
         return jsonify({'error': 'No movie IDs provided'}), 400
     
-    movie_ids = [int(mid) for mid in param.split(',')]
-    watched_movies = [get_movie_by_id(mid) for mid in movie_ids if get_movie_by_id(mid)]
-    print(watched_movies)
-    if not watched_movies:
-        return jsonify({'error': 'No valid movie IDs found'}), 404
+    # this is list of imdb ids 
+    movie_ids = [mid for mid in param.split(',')]
+    filesToBeSearched = []
+    for m in movie_ids:
+        for g in genreGetter(m):
+            filesToBeSearched.append(f'chunks/chunk{str(imdb_to_chunk[m])}/subchunk_{g}.csv')
 
-    # Example: Compare plots using difflib for similarity
-    watched_plots = " ".join([str(movie['plot']) for movie in watched_movies])
-    
-    def plot_similarity(plot1, plot2):
-        return difflib.SequenceMatcher(None, plot1, plot2).ratio()
+    # print(filesToBeSearched)
 
-    # Recommend movie with similar plot that hasn't been watched yet
-    recommendations = []
-    genres = list(set([get_genre(mid) for mid in movie_ids if get_genre(mid)]))
-    for movie in movies_data:
-        if movie['id'] not in movie_ids and movie['genre'] in genres:
-            similarity = plot_similarity(watched_plots, movie['plot'])
-            if similarity > 0.1:  # Threshold for similarity
-                recommendations.append(movie)
-    
-    
 
-    if recommendations:
-        return jsonify({'recommended': random.choice(recommendations)})
-    else:
-        return jsonify({'error': 'No similar movies found'}), 404
+
+    
+    # watched_movies = []
+    # for chunk_folder in glob.glob('chunk*'):
+    #     for movie_id in movie_ids:
+    #         movie = get_movie_by_id(movie_id, chunk_folder)
+    #         if movie:
+    #             watched_movies.append(movie)
+
+    def calculate_similarity(plot1, plot2):
+        return SequenceMatcher(None, plot1, plot2).ratio()
+
+    # def find_most_similar_movie(imdb_id):
+    # Get the plot of the given movie
+    inwhy = 0
+    lOfFiles = []
+    for ftbs in filesToBeSearched:
+        try:
+            lOfFiles.append(pd.read_csv(ftbs))
+        except:
+            pass
+    # while True:
+    #     try:
+    #         df = pd.read_csv(filesToBeSearched[inwhy])
+    #         break
+    #     except:
+    #         inwhy+=1
+
+    df = pd.concat(lOfFiles)
+
+    
+    given_plot = df[df['imdb_id'] == (movie_ids[0])]['overview'].values[0]
+    
+    # Initialize variables to store the maximum similarity ratio and the corresponding movie ID
+    max_similarity = 0
+    max_similarity_movie_id = None
+    
+    # Iterate over the entire dataframe
+    for index, row in df.iterrows():
+        # Skip the row if it's the same as the given movie
+        if row['imdb_id'] == movie_ids[0]:
+            continue
+        
+        # Extract the plot of the current movie
+        plot = row['overview']
+        
+        # print(plot, index, sep='\n')
+
+        # if len(plot)>0:
+        #     # Calculate the similarity ratio between the given plot and the current plot
+        similarity = calculate_similarity(str(given_plot), str(plot))
+        # else: similarity = 0
+        # Update the maximum similarity ratio and the corresponding movie ID if necessary
+        if similarity > max_similarity:
+            max_similarity = similarity
+            max_similarity_movie_id = row['imdb_id']
+    
+    
+    # if recommendations:
+    return jsonify({'recommended': max_similarity_movie_id})
+    # else:
+    #     return jsonify({'error': 'No similar movies found'}), 404
 
 # /reccgenre - Fetches recommendations based on genre
 @app.route('/reccgenre', methods=['GET'])
 def recc_genre():
     genre = request.args.get('param')
-    valid_genres = [
-        'action', 'adventure', 'animation', 'anime', 'comedy', 'crime',
-        'documentary', 'drama', 'family', 'fantasy', 'horror', 'mystery',
-        'romance', 'sci-fi', 'sport', 'thriller'
-    ]
+    valid_genres = list(genre_to_subchunk.keys())
     
     if genre not in valid_genres:
         return jsonify({'error': 'Invalid genre'}), 400
     
-    # Filter movies based on the genre
-    genre_movies = [movie for movie in movies_data if movie['genre'] == genre]
+    # Get movies by genre
+    movies = []
+    for chunk_folder in glob.glob('chunk*'):
+        movies.extend(get_movies_by_genre(genre, chunk_folder))
     
-    if genre_movies:
-        return jsonify({'recommended': random.choice(genre_movies)})
+    if movies:
+        return jsonify({'recommended': random.choice(movies)})
     else:
         return jsonify({'error': f'No movies found in genre: {genre}'}), 404
 
@@ -87,7 +149,11 @@ def recc_random():
     watched_ids = [int(mid) for mid in watched_param.split(',')] if watched_param else []
     
     # Recommend a random unwatched movie
-    unwatched_movies = [movie for movie in movies_data if movie['id'] not in watched_ids]
+    unwatched_movies = []
+    for chunk_folder in glob.glob('chunk*'):
+        for file in glob.glob(os.path.join(chunk_folder, 'subchunk_*.csv')):
+            df = pd.read_csv(file)
+            unwatched_movies.extend(df.loc[~df['id'].isin(watched_ids)].to_dict('records'))
     
     if unwatched_movies:
         return jsonify({'recommended': random.choice(unwatched_movies)})

@@ -1,3 +1,6 @@
 Flask==3.0.3
 Flask_Cors==5.0.0
+pandas==2.2.3
+Requests==2.32.3
+numpy
 gunicorn>=20.1.0

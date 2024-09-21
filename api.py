@@ -2,8 +2,10 @@ from flask import Flask, request, jsonify
 import json
 import random
 import difflib
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)
 
 # Load JSON data from a file
 with open('movies.json') as f:

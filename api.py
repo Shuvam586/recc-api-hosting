@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import pandas as pd
 import random
 from difflib import SequenceMatcher
@@ -8,6 +9,7 @@ import json
 from helper import genreGetter
 
 app = Flask(__name__)
+CORS(app)
 
 # Load genre to sub-chunk mapping from JSON file
 with open('genre_to_subchunk.json') as f:
